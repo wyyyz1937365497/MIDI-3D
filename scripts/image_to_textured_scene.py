@@ -21,8 +21,8 @@ def prepare_midi_pipeline(device, dtype):
 
 def prepare_ig2mv_pipeline(device, dtype):
     return ig2mv_infer.prepare_pipeline(
-        base_model="stabilityai/stable-diffusion-xl-base-1.0",
-        vae_model="madebyollin/sdxl-vae-fp16-fix",
+        base_model="/home/wyyyz/.cache/modelscope/hub/models/stabilityai/stable-diffusion-2-1",
+        vae_model=None,
         unet_model=None,
         lora_model=None,
         adapter_path="huanngzh/mv-adapter",

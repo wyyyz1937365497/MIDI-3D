@@ -1,0 +1,4 @@
+tmp/
+*.pyc
+MIDI-3D/
+checkpoints/
