@@ -1,7 +1,7 @@
 gradio==4.44.1
 gradio_image_prompter
 diffusers
-transformers==4.49.0
+transformers==4.57.0
 pydantic==2.10.6
 einops
 torch-cluster
@@ -14,4 +14,8 @@ numpy
 peft
 pytorch-lightning
 open3d
-pymeshlab
+pymeshlab==2022.2.post4
+jaxtyping
+numpy==1.26.0
+ninja
+cython

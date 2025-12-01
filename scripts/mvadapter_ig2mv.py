@@ -219,7 +219,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # Models - 修改为SD2.1的基础模型
     parser.add_argument(
-        "--base_model", type=str, default="/home/wyyyz/.cache/modelscope/hub/models/stabilityai/stable-diffusion-2-1"
+        "--base_model", type=str, default="/home/wyyyz/.cache/modelscope/hub/models/stabilityai/stable-diffusion-2-1-base"
     )
     parser.add_argument(
         "--vae_model", type=str, default=None  # SD2.1使用内置VAE，不需要额外指定
