@@ -19,3 +19,5 @@ jaxtyping
 numpy==1.26.0
 ninja
 cython
+pip install gltflib
+gltlib
