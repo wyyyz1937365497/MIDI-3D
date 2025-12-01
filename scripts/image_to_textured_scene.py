@@ -12,7 +12,8 @@ from tqdm import tqdm
 import scripts.inference_midi as midi_infer
 import scripts.mvadapter_ig2mv as ig2mv_infer
 from midi.pipelines.pipeline_midi import MIDIPipeline
-from midi.utils.mesh_process import process_raw
+from midi.utils.mesh_process_open3d import process_raw
+    
 
 
 def prepare_midi_pipeline(device, dtype):
