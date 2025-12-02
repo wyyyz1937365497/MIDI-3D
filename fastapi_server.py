@@ -26,6 +26,16 @@ from scripts.image_to_textured_scene import (
 )
 from scripts.inference_midi import run_midi
 from huggingface_hub import snapshot_download
+def initialize_globals():
+    global object_detector, sam_processor, sam_segmentator, pipe, ig2mv_pipe, texture_pipe
+    object_detector = None
+    sam_processor = None
+    sam_segmentator = None
+    pipe = None
+    ig2mv_pipe = None
+    texture_pipe = None
+
+initialize_globals()
 
 # Constants
 TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmp")
@@ -255,20 +265,42 @@ def clear_model_attributes(model):
             pass
 
 def load_grounding_sam():
-    """Load Grounding SAM models on demand"""
+    """Load Grounding SAM models on demand - Gradio style"""
     global object_detector, sam_processor, sam_segmentator, models_loaded
 
     if not models_loaded["grounding_sam"]:
         print("Loading Grounding SAM models...")
+        print(f"Memory before loading:\n{get_memory_info()}")
+        
+        try:
+            # 直接使用Gradio的加载方式，不进行复杂的GPU移动
+            object_detector, sam_processor, sam_segmentator = prepare_model(
+                device=DEVICE,
+                detector_id="IDEA-Research/grounding-dino-tiny",
+                segmenter_id="facebook/sam-vit-base",
+            )
+            
+            # 验证加载结果
+            if object_detector is None or sam_processor is None or sam_segmentator is None:
+                raise RuntimeError("One or more models failed to load (returned None)")
+            
+            models_loaded["grounding_sam"] = True
+            
+            print(f"Memory after loading:\n{get_memory_info()}")
+            print("Grounding SAM models loaded successfully.")
+            
+        except Exception as e:
+            print(f"Error loading Grounding SAM models: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 重置状态
+            object_detector = None
+            sam_processor = None
+            sam_segmentator = None
+            models_loaded["grounding_sam"] = False
+            raise RuntimeError(f"Failed to load Grounding SAM models: {str(e)}")
 
-        object_detector, sam_processor, sam_segmentator = prepare_model(
-            device=DEVICE,
-            detector_id="IDEA-Research/grounding-dino-tiny",
-            segmenter_id="facebook/sam-vit-base",
-        )
-        models_loaded["grounding_sam"] = True
-
-        print("Grounding SAM models loaded successfully.")
 
 def load_midi_model():
     """Load MIDI model on demand with chunked loading"""
@@ -452,7 +484,8 @@ def process_image_to_3d(
     polygon_refinement: bool = True,
     detect_threshold: float = 0.3
 ):
-    """Process an image to generate a 3D model with textures"""
+    """Process an image to generate a 3D model with textures - Gradio style"""
+    global object_detector, sam_processor, sam_segmentator, pipe, ig2mv_pipe, texture_pipe, models_loaded
     try:
         # Update status: Starting
         update_task_status(task_id, "processing", "Starting 3D reconstruction process...", 0.05)
@@ -460,12 +493,18 @@ def process_image_to_3d(
         # Load models as needed
         update_task_status(task_id, "processing", "Loading segmentation models...", 0.1)
         load_grounding_sam()
+        
+        # 关键验证：确保模型已正确加载
+        if sam_processor is None or sam_segmentator is None or object_detector is None:
+            error_msg = "Segmentation models are not properly loaded"
+            update_task_status(task_id, "error", error_msg)
+            raise RuntimeError(error_msg)
 
         # Load the image
         update_task_status(task_id, "processing", "Loading image...", 0.15)
         rgb_image = Image.open(image_path).convert("RGB")
 
-        # Prepare segmentation parameters
+        # Prepare segmentation parameters - 使用Gradio的逻辑
         segment_kwargs = {}
 
         if seg_mode == "box":
@@ -473,7 +512,7 @@ def process_image_to_3d(
             if boxes is None or len(boxes) == 0:
                 raise ValueError("No bounding boxes provided for box mode")
 
-            # Convert boxes to the expected format
+            # Convert boxes to the expected format - 匹配Gradio格式
             formatted_boxes = [
                 [
                     [int(box["x1"]), int(box["y1"]), int(box["x2"]), int(box["y2"])]
@@ -493,16 +532,18 @@ def process_image_to_3d(
             detections = detect(object_detector, rgb_image, text_labels, detect_threshold)
             segment_kwargs["detection_results"] = detections
 
-        # Run the segmentation
+        # Run the segmentation - 使用Gradio的torch.no_grad()模式
         update_task_status(task_id, "processing", "Running segmentation...", 0.25)
-        detections = segment(
-            sam_processor,
-            sam_segmentator,
-            rgb_image,
-            polygon_refinement=polygon_refinement,
-            **segment_kwargs,
-        )
-        seg_map_pil = plot_segmentation(rgb_image, detections)
+        
+        with torch.no_grad():
+            detections = segment(
+                sam_processor,
+                sam_segmentator,
+                rgb_image,
+                polygon_refinement=polygon_refinement,
+                **segment_kwargs,
+            )
+            seg_map_pil = plot_segmentation(rgb_image, detections)
 
         # Save segmentation result temporarily
         seg_path = os.path.join(TMP_DIR, f"{task_id}_seg.png")
@@ -511,10 +552,13 @@ def process_image_to_3d(
         # Clean up segmentation models to free memory
         update_task_status(task_id, "processing", "Cleaning up segmentation models...", 0.25)
         if models_loaded["grounding_sam"]:
-            if object_detector is not None:
-                clear_model_attributes(object_detector)
-            if sam_segmentator is not None:
-                clear_model_attributes(sam_segmentator)
+            try:
+                if object_detector is not None:
+                    clear_model_attributes(object_detector)
+                if sam_segmentator is not None:
+                    clear_model_attributes(sam_segmentator)
+            except Exception as e:
+                print(f"Warning: Error during cleanup: {e}")
 
             object_detector = None
             sam_processor = None
@@ -527,17 +571,20 @@ def process_image_to_3d(
         update_task_status(task_id, "processing", "Loading 3D generation model...", 0.3)
         load_midi_model()
 
-        # Generate 3D scene
+        # Generate 3D scene - 使用Gradio的torch.no_grad()和autocast
         update_task_status(task_id, "processing", "Generating 3D scene...", 0.5)
-        scene = run_midi(
-            pipe,
-            rgb_image,
-            seg_map_pil,
-            seed=42,  # Fixed seed for reproducibility
-            num_inference_steps=35,
-            guidance_scale=7.0,
-            do_image_padding=True,
-        )
+        
+        with torch.no_grad():
+            with torch.autocast(device_type=DEVICE, dtype=DTYPE):
+                scene = run_midi(
+                    pipe,
+                    rgb_image,
+                    seg_map_pil,
+                    seed=42,  # Fixed seed for reproducibility
+                    num_inference_steps=35,
+                    guidance_scale=7.0,
+                    do_image_padding=True,
+                )
 
         # Save the 3D scene
         scene_path = os.path.join(TMP_DIR, f"{task_id}_scene.glb")
@@ -569,7 +616,7 @@ def process_image_to_3d(
         update_task_status(task_id, "processing", "Loading texture generation models...", 0.7)
         load_mv_adapter()
 
-        # Apply textures
+        # Apply textures - 使用Gradio的torch.no_grad()模式
         update_task_status(task_id, "processing", "Applying textures to 3D model...", 0.8)
         scene = trimesh.load(scene_path, process=False)
 
@@ -577,16 +624,17 @@ def process_image_to_3d(
         tmp_dir = os.path.join(TMP_DIR, f"textured_{task_id}")
         os.makedirs(tmp_dir, exist_ok=True)
 
-        # Generate textured scene
-        textured_scene = run_i2tex(
-            ig2mv_pipe,
-            texture_pipe,
-            scene,
-            rgb_image,
-            seg_map_pil,
-            seed=42,  # Fixed seed for reproducibility
-            output_dir=tmp_dir,
-        )
+        with torch.no_grad():
+            # Generate textured scene
+            textured_scene = run_i2tex(
+                ig2mv_pipe,
+                texture_pipe,
+                scene,
+                rgb_image,
+                seg_map_pil,
+                seed=42,  # Fixed seed for reproducibility
+                output_dir=tmp_dir,
+            )
 
         # Export the final textured model
         final_model_path = os.path.join(tmp_dir, "textured_scene.glb")
@@ -603,7 +651,7 @@ def process_image_to_3d(
 
                 components = ['unet', 'vae', 'text_encoder', 'tokenizer', 'scheduler']
                 for comp in components:
-                    if hasattr(ig2mv_pipe, comp) and getattr(ig2mv_pipe, comp) is not None:
+                    if hasattr(ig2mv_pipe, comp) and getattr(pipe, comp) is not None:
                         clear_model_attributes(getattr(ig2mv_pipe, comp))
                         setattr(ig2mv_pipe, comp, None)
 
@@ -645,6 +693,35 @@ def process_image_to_3d(
         # Update status: Error
         update_task_status(task_id, "error", f"Error during processing: {str(e)}")
         print(f"Error processing task {task_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def get_memory_info():
+    """Get comprehensive memory usage information"""
+    info = []
+    
+    # GPU Memory
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3   # GB
+        info.append(f"GPU - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+    else:
+        info.append("GPU: Not Available")
+    
+    # System RAM
+    process = psutil.Process(os.getpid())
+    ram_info = process.memory_info()
+    ram_used = ram_info.rss / 1024**3  # GB
+    ram_percent = process.memory_percent()
+    system_ram = psutil.virtual_memory()
+    system_ram_used = system_ram.used / 1024**3
+    system_ram_total = system_ram.total / 1024**3
+    
+    info.append(f"Process RAM: {ram_used:.2f}GB ({ram_percent:.1f}%)")
+    info.append(f"System RAM: {system_ram_used:.1f}/{system_ram_total:.1f}GB ({system_ram.percent:.1f}%)")
+    
+    return "\n".join(info)
+
 
 @app.get("/")
 async def root():
