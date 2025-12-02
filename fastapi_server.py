@@ -486,6 +486,21 @@ def process_image_to_3d(
 ):
     """Process an image to generate a 3D model with textures - Gradio style"""
     global object_detector, sam_processor, sam_segmentator, pipe, ig2mv_pipe, texture_pipe, models_loaded
+    
+    def cleanup_pipeline(pipeline, components):
+        """封装的清理函数，避免重复代码"""
+        if pipeline is None:
+            return
+        try:
+            pipeline.to('cpu')
+        except:
+            pass
+        for comp in components:
+            if hasattr(pipeline, comp) and getattr(pipeline, comp) is not None:
+                clear_model_attributes(getattr(pipeline, comp))
+                setattr(pipeline, comp, None)
+        clear_model_attributes(pipeline)
+    
     try:
         # Update status: Starting
         update_task_status(task_id, "processing", "Starting 3D reconstruction process...", 0.05)
@@ -640,36 +655,16 @@ def process_image_to_3d(
         final_model_path = os.path.join(tmp_dir, "textured_scene.glb")
         textured_scene.export(final_model_path)
 
-        # Clean up MV-Adapter models
+        # Clean up MV-Adapter models - 修复后的部分
         update_task_status(task_id, "processing", "Cleaning up texture generation models...", 0.9)
         if models_loaded["mv_adapter"]:
+            # 清理ig2mv_pipe - 使用正确的变量引用
             if ig2mv_pipe is not None:
-                try:
-                    ig2mv_pipe.to('cpu')
-                except:
-                    pass
+                cleanup_pipeline(ig2mv_pipe, ['unet', 'vae', 'text_encoder', 'tokenizer', 'scheduler'])
 
-                components = ['unet', 'vae', 'text_encoder', 'tokenizer', 'scheduler']
-                for comp in components:
-                    if hasattr(ig2mv_pipe, comp) and getattr(pipe, comp) is not None:
-                        clear_model_attributes(getattr(ig2mv_pipe, comp))
-                        setattr(ig2mv_pipe, comp, None)
-
-                clear_model_attributes(ig2mv_pipe)
-
+            # 清理texture_pipe - 使用正确的变量引用
             if texture_pipe is not None:
-                try:
-                    texture_pipe.to('cpu')
-                except:
-                    pass
-
-                components = ['unet', 'vae', 'text_encoder', 'tokenizer', 'scheduler']
-                for comp in components:
-                    if hasattr(texture_pipe, comp) and getattr(texture_pipe, comp) is not None:
-                        clear_model_attributes(getattr(texture_pipe, comp))
-                        setattr(texture_pipe, comp, None)
-
-                clear_model_attributes(texture_pipe)
+                cleanup_pipeline(texture_pipe, ['unet', 'vae', 'text_encoder', 'tokenizer', 'scheduler'])
 
             ig2mv_pipe = None
             texture_pipe = None
