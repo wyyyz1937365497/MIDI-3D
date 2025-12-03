@@ -1,4 +1,4 @@
-
+import json
 import os
 import uuid
 import time
@@ -10,11 +10,11 @@ import numpy as np
 import torch
 import trimesh
 from PIL import Image
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 
 # Import MIDI-3D components
 from midi.pipelines.pipeline_midi import MIDIPipeline
@@ -26,6 +26,7 @@ from scripts.image_to_textured_scene import (
 )
 from scripts.inference_midi import run_midi
 from huggingface_hub import snapshot_download
+
 def initialize_globals():
     global object_detector, sam_processor, sam_segmentator, pipe, ig2mv_pipe, texture_pipe
     object_detector = None
@@ -479,7 +480,7 @@ def process_image_to_3d(
     task_id: str, 
     image_path: str, 
     seg_mode: str = "box",
-    boxes: Optional[List[dict]] = None,
+    boxes: Optional[List[Any]] = None,  # Changed to Any to handle both dict and list formats
     labels: Optional[str] = None,
     polygon_refinement: bool = True,
     detect_threshold: float = 0.3
@@ -523,20 +524,13 @@ def process_image_to_3d(
         segment_kwargs = {}
 
         if seg_mode == "box":
-            # Process bounding boxes
+            # Process bounding boxes (already formatted by the API endpoint)
             if boxes is None or len(boxes) == 0:
                 raise ValueError("No bounding boxes provided for box mode")
 
-            # Convert boxes to the expected format - 匹配Gradio格式
-            formatted_boxes = [
-                [
-                    [int(box["x1"]), int(box["y1"]), int(box["x2"]), int(box["y2"])]
-                    for box in boxes
-                ]
-            ]
-
-            segment_kwargs["boxes"] = formatted_boxes
-            update_task_status(task_id, "processing", f"Processing {len(boxes)} bounding boxes...", 0.2)
+            # The 'boxes' variable is now already in the correct format from the API endpoint
+            segment_kwargs["boxes"] = [boxes]
+            update_task_status(task_id, "processing", f"Processing {len(boxes[0])} bounding boxes...", 0.2)
         else:
             # Process text labels
             if labels is None or labels == "":
@@ -691,8 +685,8 @@ def process_image_to_3d(
         import traceback
         traceback.print_exc()
 
-def get_memory_info():
-    """Get comprehensive memory usage information"""
+def get_memory_info_str():
+    """Get comprehensive memory usage information as a string"""
     info = []
     
     # GPU Memory
@@ -727,18 +721,18 @@ async def root():
 async def process_image(
     background_tasks: BackgroundTasks, 
     file: UploadFile = File(...),
-    seg_mode: str = "box",
-    boxes_json: Optional[str] = None,
-    labels: Optional[str] = None,
-    polygon_refinement: bool = True,
-    detect_threshold: float = 0.3
+    seg_mode: str = Form("box"),
+    boxes_json: Optional[str] = Form(None),
+    labels: Optional[str] = Form(None),
+    polygon_refinement: bool = Form(True),
+    detect_threshold: float = Form(0.3)
 ):
     """Process an uploaded image to generate a 3D model with textures
 
     Parameters:
     - file: 上传的图片文件
     - seg_mode: 分割模式，"box"（使用矩形框）或 "label"（使用文本标签）
-    - boxes_json: 矩形框的JSON字符串，格式为 [{"x1":100,"y1":100,"x2":200,"y2":200}, ...]
+    - boxes_json: 矩形框的JSON字符串，格式为 [{"x1":100,"y1":100,"x2":200,"y2":200}, ...] 或 [[100,100,200,200], ...]
     - labels: 文本标签，用逗号分隔，仅在seg_mode为"label"时使用
     - polygon_refinement: 是否使用多边形优化
     - detect_threshold: 检测阈值，仅在seg_mode为"label"时使用
@@ -768,25 +762,63 @@ async def process_image(
         content = await file.read()
         buffer.write(content)
 
-    # Parse boxes if provided
-    parsed_boxes = None
+    # Parse and format boxes if provided（修正部分）
+    formatted_boxes = None
     if boxes_json is not None:
         try:
-            import json
             parsed_boxes = json.loads(boxes_json)
+            
+            # 验证解析后的数据不为空
+            if not parsed_boxes:
+                raise ValueError("boxes_json cannot be an empty list")
+
+            # 检查第一个元素的类型以确定格式
+            first_element = parsed_boxes[0]
+            
+            # 情况1: 字典列表格式 [{"x1":..., "y1":..., ...}, ...]
+            if isinstance(first_element, dict):
+                # 转换为坐标列表并添加三层嵌套以匹配Gradio格式
+                coordinate_list = [
+                    [int(box["x1"]), int(box["y1"]), int(box["x2"]), int(box["y2"])]
+                    for box in parsed_boxes
+                ]
+                # 关键修正：添加额外的嵌套层级以匹配Gradio格式
+                formatted_boxes = [coordinate_list]
+                
+            # 情况2: 列表的列表格式 [[x1, y1, x2, y2], ...]
+            elif isinstance(first_element, list):
+                # 验证每个坐标列表有4个元素
+                for box in parsed_boxes:
+                    if len(box) != 4:
+                        raise ValueError("Each box must contain exactly 4 coordinates [x1, y1, x2, y2]")
+                
+                # 转换为整数并添加三层嵌套以匹配Gradio格式
+                coordinate_list = [
+                    [int(coord) for coord in box]
+                    for box in parsed_boxes
+                ]
+                # 关键修正：添加额外的嵌套层级以匹配Gradio格式
+                formatted_boxes = [coordinate_list]
+                
+            else:
+                # 不支持的格式
+                raise TypeError("boxes_json must be a list of objects or a list of coordinate lists")
+
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid JSON format for boxes_json")
+        except (KeyError, ValueError, TypeError) as e:
+            raise HTTPException(status_code=400, detail=f"Invalid box format: {str(e)}")
 
     # Initialize task status
     update_task_status(task_id, "queued", "Task queued for processing")
 
-    # Add the processing task to background tasks
+    # Add the processing task to background tasks（传递格式化后的boxes）
     background_tasks.add_task(
         process_image_to_3d, 
         task_id, 
         image_path, 
         seg_mode, 
-        parsed_boxes, 
+        formatted_boxes,  # 使用修正后的三层嵌套格式
         labels, 
         polygon_refinement, 
         detect_threshold
@@ -837,7 +869,7 @@ async def download_model(task_id: str):
 @app.get("/memory")
 async def get_memory():
     """Get memory usage information"""
-    return get_memory_info()
+    return get_memory_info_str()
 
 @app.post("/cleanup")
 async def cleanup():
