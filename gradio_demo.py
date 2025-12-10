@@ -132,17 +132,17 @@ ig2mv_pipe = None
 texture_pipe = None
 
 
-def prepare_ig2mv_pipeline(device, dtype, base_model=None, vae_model=None, unet_model=None, scheduler=None, lora_model=None):
+def prepare_ig2mv_pipeline(device, dtype, base_model=None):
     if base_model is None:
         base_model = "/home/wyyyz/.cache/modelscope/hub/models/stabilityai/stable-diffusion-2-1-base"
     
     return ig2mv_infer.prepare_pipeline(
         base_model=base_model,
-        vae_model=vae_model,
-        unet_model=unet_model,
-        lora_model=lora_model,
+        vae_model=None,
+        unet_model=None,
+        lora_model=None,
         adapter_path="huanngzh/mv-adapter",
-        scheduler=scheduler,
+        scheduler=None,
         num_views=6,
         device=device,
         dtype=dtype,
@@ -484,7 +484,7 @@ def unload_midi_model():
         print(f"Memory after unloading:\n{get_memory_info()}")
         print("MIDI model unloaded and memory freed.")
 
-def load_mv_adapter(sd_weights=None, vae_weights=None, unet_weights=None, use_lcm_lora=False, sampler="Default"):
+def load_mv_adapter(sd_weights=None):
     """Load MV-Adapter models on demand"""
     global ig2mv_pipe, texture_pipe, models_loaded
     
@@ -510,43 +510,6 @@ def load_mv_adapter(sd_weights=None, vae_weights=None, unet_weights=None, use_lc
         else:
             print("Using default SD weights")
             
-        # 如果提供了VAE权重，则设置它
-        if vae_weights and vae_weights.strip():
-            if os.path.exists(vae_weights):
-                print(f"Using custom VAE weights from local path: {vae_weights}")
-                pipeline_kwargs["vae_model"] = vae_weights
-            else:
-                # 如果不是有效路径，则假定它是HuggingFace仓库ID
-                print(f"Using custom VAE weights from HF repo: {vae_weights}")
-                pipeline_kwargs["vae_model"] = vae_weights
-        else:
-            pipeline_kwargs["vae_model"] = None
-            
-        # 如果提供了UNet权重，则设置它
-        if unet_weights and unet_weights.strip():
-            if os.path.exists(unet_weights):
-                print(f"Using custom UNet weights from local path: {unet_weights}")
-                pipeline_kwargs["unet_model"] = unet_weights
-            else:
-                # 如果不是有效路径，则假定它是HuggingFace仓库ID
-                print(f"Using custom UNet weights from HF repo: {unet_weights}")
-                pipeline_kwargs["unet_model"] = unet_weights
-        else:
-            pipeline_kwargs["unet_model"] = None
-            
-        # 设置采样器
-        if sampler != "Default":
-            if sampler == "LCM" or use_lcm_lora:
-                pipeline_kwargs["scheduler"] = "lcm"
-            # 其他采样器类型将在run_pipeline中处理
-            
-        # 如果启用LCM LoRA，则设置相应的调度器和LoRA模型
-        if use_lcm_lora:
-            print("Using LCM LoRA for faster inference")
-            pipeline_kwargs["scheduler"] = "lcm"
-            # 正确设置LCM LoRA模型路径
-            pipeline_kwargs["lora_model"] = "latent-consistency/lcm-lora-sdv1-5"
-        
         ig2mv_pipe = prepare_ig2mv_pipeline(**pipeline_kwargs)
         texture_pipe = prepare_texture_pipeline(device=DEVICE, dtype=DTYPE)
         models_loaded["mv_adapter"] = True
@@ -723,16 +686,9 @@ def run_generation(
 
 
 @torch.no_grad()
-def apply_texture(scene_path: str, rgb_image: Any, seg_image: Any, seed: int, 
-                 sd_weights: str = "", vae_weights: str = "", unet_weights: str = "", 
-                 use_lcm_lora: bool = False, sampler: str = "Default", 
-                 texture_steps: int = 35, texture_cfg: float = 3.0):
+def apply_texture(scene_path: str, rgb_image: Any, seg_image: Any, seed: int, sd_weights: str = ""):
     # Load MV-Adapter models on demand
-    load_mv_adapter(sd_weights if sd_weights.strip() else None, 
-                   vae_weights if vae_weights.strip() else None,
-                   unet_weights if unet_weights.strip() else None,
-                   use_lcm_lora,
-                   sampler)
+    load_mv_adapter(sd_weights if sd_weights.strip() else None)
     
     if not isinstance(rgb_image, Image.Image) and "image" in rgb_image:
         rgb_image = rgb_image["image"]
@@ -754,9 +710,6 @@ def apply_texture(scene_path: str, rgb_image: Any, seg_image: Any, seed: int,
         seg_image,
         seed,
         output_dir=tmp_dir,
-        num_inference_steps=texture_steps,
-        guidance_scale=texture_cfg,
-        sampler=sampler
     )
     print(
         f"Texture generation completed. Final scene has {len(textured_scene.geometry)} meshes"
@@ -856,7 +809,7 @@ with gr.Blocks() as demo:
                 glb_info = gr.Textbox(label="GLB Info", interactive=False)
                 tex_from_glb_button = gr.Button("Apply Texture to Uploaded GLB", interactive=False)
             
-            # 添加SD权重选择输入框和LCM LoRA选项
+            # 添加SD权重选择输入框
             with gr.Accordion("Texture Generation Settings", open=False):
                 sd_weights = gr.Textbox(
                     label="Stable Diffusion Weights",
@@ -864,49 +817,7 @@ with gr.Blocks() as demo:
                     value="",
                     info="HuggingFace repo ID (e.g., stabilityai/stable-diffusion-2-1) or local path to weights"
                 )
-                vae_weights = gr.Textbox(
-                    label="VAE Weights (Optional)",
-                    placeholder="Leave empty to use default VAE, or enter HF repo ID or local path",
-                    value="",
-                    info="HuggingFace repo ID (e.g., stabilityai/sd-vae-ft-mse) or local path to VAE weights"
-                )
-                unet_weights = gr.Textbox(
-                    label="UNet Weights (Optional)",
-                    placeholder="Leave empty to use default UNet, or enter HF repo ID or local path",
-                    value="",
-                    info="HuggingFace repo ID or local path to UNet weights"
-                )
-                
-                # 添加采样器选择、步数和CFG调整控件
-                with gr.Group():
-                    sampler = gr.Dropdown(
-                        choices=["Default", "DDPM", "LCM", "Euler", "Euler a", "DPM++", "DPM++ SDE"],
-                        value="Default",
-                        label="Sampler",
-                        info="Select the sampling algorithm for texture generation"
-                    )
-                    texture_steps = gr.Slider(
-                        label="Sampling Steps",
-                        minimum=1,
-                        maximum=100,
-                        step=1,
-                        value=35,
-                        info="Number of denoising steps for texture generation"
-                    )
-                    texture_cfg = gr.Slider(
-                        label="CFG Scale",
-                        minimum=0.0,
-                        maximum=20.0,
-                        step=0.1,
-                        value=3.0,
-                        info="Classifier-Free Guidance scale for texture generation"
-                    )
-                
-                use_lcm_lora = gr.Checkbox(
-                    label="Use LCM LoRA for faster inference",
-                    value=False,
-                    info="Enable Latent Consistency Model LoRA to speed up texture generation"
-                )
+            
             tex_button = gr.Button("Apply Texture", interactive=False)
             
             # Add memory management buttons
@@ -998,7 +909,7 @@ with gr.Blocks() as demo:
     # 添加纹理应用于上传的GLB的按钮点击事件
     tex_from_glb_button.click(
         apply_texture,
-        inputs=[uploaded_glb, image_prompts, seg_image, seed, sd_weights, vae_weights, unet_weights, use_lcm_lora, sampler, texture_steps, texture_cfg],
+        inputs=[uploaded_glb, image_prompts, seg_image, seed, sd_weights],
         outputs=[textured_model_output, download_textured_glb, seed],
     ).then(lambda: gr.Button(interactive=True), outputs=[download_textured_glb]).then(
         update_memory_status, outputs=[memory_status, memory_info]
@@ -1006,7 +917,7 @@ with gr.Blocks() as demo:
 
     tex_button.click(
         apply_texture,
-        inputs=[model_output, image_prompts, seg_image, seed, sd_weights, vae_weights, unet_weights, use_lcm_lora, sampler, texture_steps, texture_cfg],
+        inputs=[model_output, image_prompts, seg_image, seed, sd_weights],
         outputs=[textured_model_output, download_textured_glb, seed],
     ).then(lambda: gr.Button(interactive=True), outputs=[download_textured_glb]).then(
         update_memory_status, outputs=[memory_status, memory_info]

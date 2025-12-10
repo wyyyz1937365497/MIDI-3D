@@ -77,9 +77,6 @@ def run_i2tex(
     seg_image: Union[str, Image.Image],
     seed: int,
     output_dir: str,
-    num_inference_steps: int = 35,
-    guidance_scale: float = 3.0,
-    sampler: str = "Default"
 ) -> trimesh.Scene:
     os.makedirs(output_dir, exist_ok=True)
 
@@ -116,11 +113,10 @@ def run_i2tex(
             image=rgba,
             height=768,
             width=768,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
+            num_inference_steps=35,
+            guidance_scale=3.0,
             reference_conditioning_scale=0.7,
             seed=seed,
-            scheduler=sampler
         )
         mv_path = f"{output_dir}/mv_{i}.png"
         ig2mv_infer.make_image_grid(mv_images, rows=1).save(mv_path)

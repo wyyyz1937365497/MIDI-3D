@@ -1,7 +1,6 @@
 # copied from https://github.com/huanngzh/MV-Adapter/blob/main/scripts/inference_ig2mv_partial_sdxl.py  
 import argparse
 import json
-import os
 
 import numpy as np
 import torch
@@ -21,17 +20,6 @@ from torchvision import transforms
 from tqdm import tqdm
 from transformers import AutoModelForImageSegmentation
 
-# 添加全局异常处理以兼容旧版模型文件
-try:
-    # 尝试添加安全全局变量以支持某些模型文件
-    import pytorch_lightning.callbacks.model_checkpoint
-    torch.serialization.add_safe_globals([pytorch_lightning.callbacks.model_checkpoint.ModelCheckpoint])
-except ImportError:
-    pass
-
-# 为旧版PyTorch兼容性准备weights_only参数
-LOAD_KWARGS = {}
-
 
 def prepare_pipeline(
     base_model,
@@ -46,116 +34,14 @@ def prepare_pipeline(
 ):
     # Load vae and unet if provided
     pipe_kwargs = {}
-    vae_loaded = False
-    unet_loaded = False
-    
     if vae_model is not None:
-        # 检查是否为本地路径（文件存在且有适当的扩展名）
-        if os.path.exists(vae_model) and (vae_model.endswith('.pt') or vae_model.endswith('.ckpt') or vae_model.endswith('.safetensors')):
-            print(f"Loading VAE from local path: {vae_model}")
-            try:
-                pipe_kwargs["vae"] = AutoencoderKL.from_single_file(vae_model, **LOAD_KWARGS)
-                vae_loaded = True
-            except Exception as e:
-                print(f"Failed to load VAE with from_single_file: {e}")
-                print("Continuing without custom VAE")
-        else:
-            print(f"Loading VAE from HF repo: {vae_model}")
-            try:
-                pipe_kwargs["vae"] = AutoencoderKL.from_pretrained(vae_model)
-                vae_loaded = True
-            except Exception as e:
-                print(f"Failed to load VAE from HF repo: {e}")
-                print("Continuing without custom VAE")
-            
+        pipe_kwargs["vae"] = AutoencoderKL.from_pretrained(vae_model)
     if unet_model is not None:
-        # 检查是否为本地路径（文件存在且有适当的扩展名）
-        if os.path.exists(unet_model) and (unet_model.endswith('.pt') or unet_model.endswith('.ckpt') or unet_model.endswith('.safetensors')):
-            print(f"Loading UNet from local path: {unet_model}")
-            try:
-                pipe_kwargs["unet"] = UNet2DConditionModel.from_single_file(unet_model, **LOAD_KWARGS)
-                unet_loaded = True
-            except Exception as e:
-                print(f"Failed to load UNet with from_single_file: {e}")
-                print("Continuing without custom UNet")
-        else:
-            print(f"Loading UNet from HF repo: {unet_model}")
-            try:
-                pipe_kwargs["unet"] = UNet2DConditionModel.from_pretrained(unet_model)
-                unet_loaded = True
-            except Exception as e:
-                print(f"Failed to load UNet from HF repo: {e}")
-                print("Continuing without custom UNet")
+        pipe_kwargs["unet"] = UNet2DConditionModel.from_pretrained(unet_model)
 
     # Prepare pipeline - 使用SD2.1的pipeline
     pipe: MVAdapterI2MVSDPipeline
-    # 检查基础模型是否为本地路径
-    if os.path.exists(base_model) and (base_model.endswith(".ckpt") or base_model.endswith(".safetensors")):
-        print(f"Loading base model from local checkpoint: {base_model}")
-        try:
-            # 当使用自定义组件时，我们只传递这些组件，避免加载基础模型中的对应组件
-            pipe = MVAdapterI2MVSDPipeline.from_single_file(base_model, **pipe_kwargs, **LOAD_KWARGS)
-        except Exception as e:
-            print(f"Failed to load base model with from_single_file: {e}")
-            # 如果已经加载了自定义组件，则创建一个不带这些组件的基础管道，然后手动设置组件
-            if vae_loaded or unet_loaded:
-                print("Custom components loaded, setting them manually...")
-                # 先创建不带自定义组件的管道
-                temp_kwargs = {}
-                try:
-                    pipe = MVAdapterI2MVSDPipeline.from_single_file(base_model, **temp_kwargs, **LOAD_KWARGS)
-                except Exception as e_temp:
-                    print(f"Failed to load base model with from_single_file (without custom components): {e_temp}")
-                    # 如果仍然失败，尝试使用 from_pretrained
-                    try:
-                        pipe = MVAdapterI2MVSDPipeline.from_pretrained(base_model, **temp_kwargs)
-                    except Exception as e_pretrained:
-                        print(f"Failed to load base model with from_pretrained: {e_pretrained}")
-                        raise e  # 如果所有方法都失败，则抛出原始异常
-                
-                # 然后手动设置自定义组件
-                if vae_loaded:
-                    pipe.vae = pipe_kwargs["vae"]
-                if unet_loaded:
-                    pipe.unet = pipe_kwargs["unet"]
-            else:
-                print("Trying from_pretrained without custom components")
-                pipe_kwargs = {}  # 清空自定义组件
-                try:
-                    pipe = MVAdapterI2MVSDPipeline.from_pretrained(base_model, **pipe_kwargs)
-                except Exception as e2:
-                    print(f"Failed to load base model with from_pretrained: {e2}")
-                    raise e  # 如果两种方法都失败，则抛出原始异常
-    else:
-        print(f"Loading base model from HF repo: {base_model}")
-        try:
-            pipe = MVAdapterI2MVSDPipeline.from_pretrained(base_model, **pipe_kwargs)
-        except Exception as e:
-            print(f"Failed to load base model from HF repo: {e}")
-            # 如果已经加载了自定义组件，则创建一个不带这些组件的基础管道，然后手动设置组件
-            if vae_loaded or unet_loaded:
-                print("Custom components loaded, setting them manually...")
-                # 先创建不带自定义组件的管道
-                temp_kwargs = {}
-                try:
-                    pipe = MVAdapterI2MVSDPipeline.from_pretrained(base_model, **temp_kwargs)
-                except Exception as e_pretrained:
-                    print(f"Failed to load base model with from_pretrained (without custom components): {e_pretrained}")
-                    raise e  # 如果仍然失败，则抛出原始异常
-                
-                # 然后手动设置自定义组件
-                if vae_loaded:
-                    pipe.vae = pipe_kwargs["vae"]
-                if unet_loaded:
-                    pipe.unet = pipe_kwargs["unet"]
-            else:
-                # 尝试不带自定义组件加载
-                pipe_kwargs = {}
-                try:
-                    pipe = MVAdapterI2MVSDPipeline.from_pretrained(base_model, **pipe_kwargs)
-                except Exception as e_no_kwargs:
-                    print(f"Failed to load base model with from_pretrained (no kwargs): {e_no_kwargs}")
-                    raise e  # 如果仍然失败，则抛出原始异常
+    pipe = MVAdapterI2MVSDPipeline.from_pretrained(base_model, **pipe_kwargs)
 
     # Load scheduler if provided
     scheduler_class = None
@@ -163,7 +49,6 @@ def prepare_pipeline(
         scheduler_class = DDPMScheduler
     elif scheduler == "lcm":
         scheduler_class = LCMScheduler
-    # 注意：其他调度器类型需要在运行时设置，因为它们需要访问pipeline.scheduler
 
     pipe.scheduler = ShiftSNRScheduler.from_scheduler(
         pipe.scheduler,
@@ -184,20 +69,8 @@ def prepare_pipeline(
 
     # load lora if provided
     if lora_model is not None:
-        # 检查是否指定了具体的文件名
-        if "/" in lora_model and "." in lora_model.split("/")[-1]:
-            # 包含文件扩展名，按原来的方式处理
-            model_, name_ = lora_model.rsplit("/", 1)
-            try:
-                pipe.load_lora_weights(model_, weight_name=name_, **LOAD_KWARGS)
-            except Exception as e:
-                print(f"Failed to load LoRA weights: {e}")
-        else:
-            # 不包含具体文件名，直接加载整个repo
-            try:
-                pipe.load_lora_weights(lora_model, **LOAD_KWARGS)
-            except Exception as e:
-                print(f"Failed to load LoRA weights: {e}")
+        model_, name_ = lora_model.rsplit("/", 1)
+        pipe.load_lora_weights(model_, weight_name=name_)
 
     pipe.enable_vae_slicing()
 
@@ -263,7 +136,6 @@ def run_pipeline(
     negative_prompt="watermark, ugly, deformed, noisy, blurry, low contrast",
     lora_scale=1.0,
     device="cuda",
-    scheduler=None,
 ):
     # Prepare cameras
     cameras = get_orthogonal_camera(
@@ -320,24 +192,6 @@ def run_pipeline(
     elif reference_image.mode == "RGBA":
         reference_image = preprocess_image(reference_image, height, width)
 
-    # 设置采样器
-    if scheduler is not None and scheduler != "Default":
-        from diffusers import (
-            EulerAncestralDiscreteScheduler,
-            EulerDiscreteScheduler,
-            DPMSolverMultistepScheduler,
-            DPMSolverSinglestepScheduler
-        )
-        
-        if scheduler == "Euler":
-            pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
-        elif scheduler == "Euler a":
-            pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
-        elif scheduler == "DPM++":
-            pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-        elif scheduler == "DPM++ SDE":
-            pipe.scheduler = DPMSolverSinglestepScheduler.from_config(pipe.scheduler.config)
-
     pipe_kwargs = {}
     if seed != -1 and isinstance(seed, int):
         pipe_kwargs["generator"] = torch.Generator(device=device).manual_seed(seed)
@@ -356,7 +210,6 @@ def run_pipeline(
         negative_prompt=negative_prompt,
         cross_attention_kwargs={"scale": lora_scale},
         **pipe_kwargs,
-        **LOAD_KWARGS,
     ).images
 
     return images, pos_images, normal_images, reference_image, transform_dict
