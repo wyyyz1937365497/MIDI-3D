@@ -12,7 +12,8 @@ from tqdm import tqdm
 import scripts.inference_midi as midi_infer
 import scripts.mvadapter_ig2mv as ig2mv_infer
 from midi.pipelines.pipeline_midi import MIDIPipeline
-from midi.utils.mesh_process import process_raw
+from midi.utils.mesh_process_open3d import process_raw
+    
 
 
 def prepare_midi_pipeline(device, dtype):
@@ -21,8 +22,8 @@ def prepare_midi_pipeline(device, dtype):
 
 def prepare_ig2mv_pipeline(device, dtype):
     return ig2mv_infer.prepare_pipeline(
-        base_model="stabilityai/stable-diffusion-xl-base-1.0",
-        vae_model="madebyollin/sdxl-vae-fp16-fix",
+        base_model="/home/wyyyz/.cache/modelscope/hub/models/stabilityai/stable-diffusion-2-1-base",
+        vae_model=None,
         unet_model=None,
         lora_model=None,
         adapter_path="huanngzh/mv-adapter",

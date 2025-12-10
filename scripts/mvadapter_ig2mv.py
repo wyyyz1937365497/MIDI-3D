@@ -1,4 +1,4 @@
-# copied from https://github.com/huanngzh/MV-Adapter/blob/main/scripts/inference_ig2mv_partial_sdxl.py
+# copied from https://github.com/huanngzh/MV-Adapter/blob/main/scripts/inference_ig2mv_partial_sdxl.py  
 import argparse
 import json
 
@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from diffusers import AutoencoderKL, DDPMScheduler, LCMScheduler, UNet2DConditionModel
 from mvadapter.models.attention_processor import DecoupledMVRowColSelfAttnProcessor2_0
-from mvadapter.pipelines.pipeline_mvadapter_i2mv_sdxl import MVAdapterI2MVSDXLPipeline
+from mvadapter.pipelines.pipeline_mvadapter_i2mv_sd import MVAdapterI2MVSDPipeline  # 使用正确的SD pipeline
 from mvadapter.schedulers.scheduling_shift_snr import ShiftSNRScheduler
 from mvadapter.utils import make_image_grid, tensor_to_image
 from mvadapter.utils.mesh_utils import (
@@ -39,9 +39,9 @@ def prepare_pipeline(
     if unet_model is not None:
         pipe_kwargs["unet"] = UNet2DConditionModel.from_pretrained(unet_model)
 
-    # Prepare pipeline
-    pipe: MVAdapterI2MVSDXLPipeline
-    pipe = MVAdapterI2MVSDXLPipeline.from_pretrained(base_model, **pipe_kwargs)
+    # Prepare pipeline - 使用SD2.1的pipeline
+    pipe: MVAdapterI2MVSDPipeline
+    pipe = MVAdapterI2MVSDPipeline.from_pretrained(base_model, **pipe_kwargs)
 
     # Load scheduler if provided
     scheduler_class = None
@@ -59,8 +59,9 @@ def prepare_pipeline(
     pipe.init_custom_adapter(
         num_views=num_views, self_attn_processor=DecoupledMVRowColSelfAttnProcessor2_0
     )
+    # 加载SD版本的adapter权重
     pipe.load_custom_adapter(
-        adapter_path, weight_name="mvadapter_ig2mv_partial_sdxl.safetensors"
+        adapter_path, weight_name="mvadapter_ig2mv_sd21.safetensors"  # 使用SD版本的权重文件
     )
 
     pipe.to(device=device, dtype=dtype)
@@ -216,12 +217,12 @@ def run_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # Models
+    # Models - 修改为SD2.1的基础模型
     parser.add_argument(
-        "--base_model", type=str, default="stabilityai/stable-diffusion-xl-base-1.0"
+        "--base_model", type=str, default="/home/wyyyz/.cache/modelscope/hub/models/stabilityai/stable-diffusion-2-1-base"
     )
     parser.add_argument(
-        "--vae_model", type=str, default="madebyollin/sdxl-vae-fp16-fix"
+        "--vae_model", type=str, default=None  # SD2.1使用内置VAE，不需要额外指定
     )
     parser.add_argument("--unet_model", type=str, default=None)
     parser.add_argument("--scheduler", type=str, default=None)
@@ -235,7 +236,7 @@ if __name__ == "__main__":
     parser.add_argument("--image", type=str, required=True)
     parser.add_argument("--text", type=str, required=False, default="high quality")
     parser.add_argument("--num_inference_steps", type=int, default=50)
-    parser.add_argument("--guidance_scale", type=float, default=3.0)
+    parser.add_argument("--guidance_scale", type=float, default=7.5)  # SD2.1通常使用7.5
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--lora_scale", type=float, default=1.0)
     parser.add_argument("--reference_conditioning_scale", type=float, default=1.0)
@@ -277,14 +278,15 @@ if __name__ == "__main__":
     else:
         remove_bg_fn = None
 
+    # 修改为SD2.1的分辨率 512x512
     images, pos_images, normal_images, reference_image, transform_dict = run_pipeline(
         pipe,
         mesh_path=args.mesh,
         num_views=args.num_views,
         text=args.text,
         image=args.image,
-        height=768,
-        width=768,
+        height=512,  # SD2.1使用512x512分辨率
+        width=512,   # SD2.1使用512x512分辨率
         num_inference_steps=args.num_inference_steps,
         guidance_scale=args.guidance_scale,
         seed=args.seed,
